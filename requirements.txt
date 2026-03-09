@@ -8,4 +8,4 @@ google-genai
 supabase
 python-docx
 fastmcp
-process-gpt-agent-sdk
+process-gpt-agent-sdk==0.2.11
