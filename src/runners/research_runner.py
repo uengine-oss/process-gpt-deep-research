@@ -1,0 +1,277 @@
+import logging
+import time
+from typing import Any, Dict, List, Optional
+
+from ..db import (
+    fetch_form_types,
+    fetch_participants_info,
+    fetch_workitem_query,
+    save_task_result,
+)
+from ..event_logger import EventLogger
+from ..formatting.report_formatting import (
+    _build_form_outputs,
+    _build_output_payload,
+    _crew_type_for_form,
+    _extract_query_from_workitem,
+    _format_form_context,
+    _summarize_sources,
+)
+from ..runners.research_utils import _resolve_query_from_history
+from ..services.charts import build_chart_markdown, normalize_chart_specs, render_chart
+from ..services.llm import chat_text
+from ..services.research import build_chart_specs, build_plan, build_report_prompt
+from ..services.storage import create_report_id, get_asset_dir
+from ..services.tavily import search_tavily
+from ..slides.slide_generation import (
+    _build_slide_markdown,
+    _build_style_guide,
+    _generate_slide_images,
+    _parse_slides,
+)
+from ..storage.asset_storage import _get_storage_bucket, _upload_file_to_storage
+from ..storage.image_markers import _replace_image_markers_with_storage
+
+logger = logging.getLogger("research-custom-runner")
+
+
+async def generate_report_markdown(
+    row: Dict[str, Any], template_schema_summary: Optional[str] = None
+) -> Dict[str, Any]:
+    todo_id = row.get("id")
+    proc_inst_id = row.get("root_proc_inst_id") or row.get("proc_inst_id")
+    tenant_id = row.get("tenant_id", "")
+    query = (row.get("query") or row.get("description") or "").strip()
+    if not query:
+        query = "업무 설명이 비어 있습니다. 가능한 범위에서 결과를 생성하세요."
+
+    raw_query = row.get("query")
+    if not raw_query:
+        raw_query = await fetch_workitem_query(str(todo_id))
+    workitem_query = _extract_query_from_workitem(raw_query or "")
+    history_query = await _resolve_query_from_history(proc_inst_id)
+    if workitem_query:
+        query_source = "workitem.inputdata"
+        query = workitem_query
+    elif history_query:
+        query_source = "history"
+        query = history_query
+    else:
+        query_source = "workitem"
+
+    logger.info("실행 시작: todo_id=%s proc_inst_id=%s tenant_id=%s", todo_id, proc_inst_id, tenant_id)
+    logger.info("입력 query(%s): %s", query_source, query)
+    logger.info("tool=%s activity_name=%s", row.get("tool"), row.get("activity_name"))
+
+    participants = await fetch_participants_info(row.get("user_id", ""))
+    proc_form_id, form_types, _form_html = await fetch_form_types(row.get("tool", ""), tenant_id)
+    logger.info("form_id=%s form_types=%s", proc_form_id, [f.get("key") for f in (form_types or [])])
+
+    event_logger = EventLogger(crew_type="report")
+    job_id = f"final_report_merge-{int(time.time())}"
+
+    event_logger.emit(
+        "task_started",
+        {
+            "goal": "Deep Research",
+            "name": row.get("activity_name") or "Deep Research",
+            "role": "Agent",
+            "task_description": query,
+            "agent_profile": "/images/chat-icon.png",
+            "user_info": participants.get("user_info", []),
+            "agent_info": participants.get("agent_info", []),
+        },
+        job_id=job_id,
+        todo_id=todo_id,
+        proc_inst_id=proc_inst_id,
+    )
+
+    form_context = _format_form_context(form_types)
+    if template_schema_summary:
+        form_context = (
+            f"{form_context}\n\nTemplate schema summary:\n{template_schema_summary}"
+        )
+    plan = build_plan(query, form_context)
+    queries = plan.get("queries") or [query]
+    outline = plan.get("outline") or ["Overview", "Key Trends", "Implications", "Conclusion"]
+    logger.info("계획 outline=%s", outline)
+    logger.info("검색 쿼리(%s): %s", len(queries), queries)
+
+    sources: List[Dict[str, str]] = []
+    for search_query in queries[:6]:
+        event_logger.emit(
+            "tool_usage_started",
+            {"tool_name": "web_search", "query": search_query},
+            job_id=job_id,
+            todo_id=todo_id,
+            proc_inst_id=proc_inst_id,
+        )
+        results = search_tavily(search_query)
+        sources.extend(results or [])
+        logger.info("검색 완료: query=%s results=%s", search_query, len(results or []))
+        event_logger.emit(
+            "tool_usage_finished",
+            {
+                "tool_name": "web_search",
+                "query": search_query,
+                "info": f"results={len(results or [])}",
+            },
+            job_id=job_id,
+            todo_id=todo_id,
+            proc_inst_id=proc_inst_id,
+        )
+
+    report_id = str(todo_id) if todo_id else create_report_id(query)
+    chart_raw = build_chart_specs(query, sources)
+    charts = normalize_chart_specs(chart_raw)
+    if charts:
+        logger.info("chart_specs_count=%s", len(charts))
+    chart_sections = []
+    asset_dir = get_asset_dir(report_id)
+    for index, chart in enumerate(charts[:3], start=1):
+        filename = f"chart-{index}.png"
+        try:
+            render_chart(chart, asset_dir / filename)
+            storage_path = f"deep-research/{report_id}/chart-{index}.png"
+            url = _upload_file_to_storage(
+                _get_storage_bucket(),
+                storage_path,
+                asset_dir / filename,
+                "image/png",
+            )
+            if not url:
+                url = f"/api/report/{report_id}/asset/{filename}"
+            chart_sections.append(
+                build_chart_markdown(chart.get("title") or f"Chart {index}", url, chart.get("caption"))
+            )
+            logger.info("chart_rendered=%s", filename)
+        except Exception:
+            continue
+
+    prompts = build_report_prompt(query, outline, sources)
+    if template_schema_summary:
+        prompts["user_prompt"] += f"\n\nTemplate schema summary:\n{template_schema_summary}\n"
+        prompts["user_prompt"] += (
+            "\n작성 규칙:\n"
+            "- optional/선택 섹션은 자료가 충분할 때만 작성하고 부족하면 생략해도 됩니다.\n"
+            "- 표는 헤더와 열 수를 맞추고, 필요 시 간결한 수치/라벨로 채우세요.\n"
+        )
+    sources_summary = _summarize_sources(sources)
+    if sources_summary:
+        prompts["user_prompt"] += f"\n\n참고 소스 요약:\n{sources_summary}\n"
+    if chart_sections:
+        prompts["user_prompt"] += (
+            "\n\nInclude these visualization blocks in the report where relevant:\n"
+            + "\n\n".join(chart_sections)
+        )
+    logger.info("보고서 작성 시작 (sources=%s)", len(sources))
+
+    markdown = chat_text(prompts["system_prompt"], prompts["user_prompt"])
+    if chart_sections and "![" not in (markdown or ""):
+        markdown = (markdown or "") + "\n\n## 시각화\n\n" + "\n\n".join(chart_sections)
+    markdown = _replace_image_markers_with_storage(markdown or "", report_id)
+    logger.info("보고서 작성 완료 (len=%s)", len(markdown or ""))
+
+    return {
+        "todo_id": todo_id,
+        "proc_inst_id": proc_inst_id,
+        "tenant_id": tenant_id,
+        "query": query,
+        "workitem_query": workitem_query,
+        "proc_form_id": proc_form_id,
+        "form_types": form_types,
+        "event_logger": event_logger,
+        "job_id": job_id,
+        "markdown": markdown,
+        "report_id": report_id,
+    }
+
+
+async def run_deep_research(row: Dict[str, Any]) -> None:
+    report = await generate_report_markdown(row)
+    todo_id = report["todo_id"]
+    proc_inst_id = report["proc_inst_id"]
+    tenant_id = report["tenant_id"]
+    query = report["query"]
+    workitem_query = report["workitem_query"]
+    proc_form_id = report["proc_form_id"]
+    form_types = report["form_types"]
+    event_logger = report["event_logger"]
+    job_id = report["job_id"]
+    markdown = report["markdown"]
+    report_id = report["report_id"]
+
+    # 슬라이드가 필요한 경우 보고서 기반 슬라이드 마크다운 및 이미지 생성
+    has_slide_form = any(
+        ("slide" in str(item.get("type") or "").lower())
+        or ("slide" in str(item.get("tag") or "").lower())
+        for item in form_types or []
+    )
+    slide_markdown = None
+    slide_images: List[str] = []
+    if has_slide_form:
+        # 스타일 가이드와 슬라이드 MD 생성
+        slide_md_raw = _build_slide_markdown(markdown)
+        slides_for_style = _parse_slides(slide_md_raw)
+        style_guide = _build_style_guide(
+            slides_for_style, deck_title=workitem_query or query, user_style=None
+        )
+        slide_markdown, slide_images = _generate_slide_images(
+            slide_md_raw,
+            report_id,
+            style_guide,
+            deck_title=workitem_query or query,
+        )
+
+    # 폼별 개별 작업 결과 이벤트 생성 (배포 환경과 유사하게 다건 노출)
+    form_outputs = _build_form_outputs(form_types, markdown, slide_markdown)
+    for item in form_types or []:
+        key = item.get("key") or ""
+        if not key or key not in form_outputs:
+            continue
+        type_val = str(item.get("type") or "")
+        tag_val = str(item.get("tag") or "")
+        name = item.get("name") or item.get("label") or key
+        crew_type = _crew_type_for_form(type_val, tag_val)
+        per_field_logger = EventLogger(crew_type=crew_type)
+        per_field_job_id = f"{job_id}-{key}"
+
+        # 시작 이벤트
+        per_field_logger.emit(
+            "task_started",
+            {
+                "role": "Form filler",
+                "goal": f"Fill form field '{name}'",
+                "agent_profile": "/images/chat-icon.png",
+                "name": name,
+                "task_description": query,
+            },
+            job_id=per_field_job_id,
+            todo_id=todo_id,
+            proc_inst_id=proc_inst_id,
+        )
+
+        # 완료 이벤트 (슬라이드의 경우 이미지 배열 포함)
+        data_payload = {key: form_outputs[key]}
+        if crew_type == "slide" and slide_images:
+            data_payload["images"] = slide_images
+        per_field_logger.emit(
+            "task_completed",
+            data_payload,
+            job_id=per_field_job_id,
+            todo_id=todo_id,
+            proc_inst_id=proc_inst_id,
+        )
+
+    # DB 저장용 payload (폼 구조 유지: proc_form_id로 래핑)
+    payload = _build_output_payload(proc_form_id, form_outputs)
+    logger.info("결과 저장: key=%s", list(payload.get(proc_form_id, {}).keys()))
+    await save_task_result(str(todo_id), payload, final=True)
+
+    event_logger.emit(
+        "crew_completed",
+        {},
+        job_id=job_id,
+        todo_id=todo_id,
+        proc_inst_id=proc_inst_id,
+    )

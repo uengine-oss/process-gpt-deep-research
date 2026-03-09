@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+python-dotenv
+openai
+requests
+matplotlib
+google-genai
+supabase
+python-docx
+fastmcp
+process-gpt-agent-sdk

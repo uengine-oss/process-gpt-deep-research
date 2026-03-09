@@ -1,0 +1,114 @@
+from typing import Any, Dict, List, Optional, Tuple
+
+from ..services.images import generate_image
+from ..services.llm import chat_text
+from ..services.storage import get_asset_dir
+from ..storage.asset_storage import _get_storage_bucket, _upload_file_to_storage
+
+
+def _build_slide_markdown(
+    report_markdown: str, slide_count: Optional[int] = None, style: Optional[str] = None
+) -> str:
+    count_line = f"슬라이드 개수: {slide_count} (최대 10장)" if slide_count else "슬라이드 개수: 적절히(최대 10장)"
+    style_line = f"스타일 가이드: {style}" if style else ""
+    prompt = (
+        "당신은 프레젠테이션 디자이너입니다. 아래 보고서 마크다운을 PPT 슬라이드용 마크다운으로 재구성하세요.\n"
+        "- 형식: # 덱 제목 1개, 이후 각 슬라이드마다 ## 슬라이드 제목 + 핵심 불릿 2~4개\n"
+        "- 불릿은 행동/팩트 중심으로 간결히\n"
+        "- 디자인 지시문은 넣지 말 것\n"
+        f"- {count_line}\n"
+        f"- {style_line}\n"
+        "\n보고서 마크다운:\n"
+        f"{report_markdown}\n"
+    )
+    return chat_text("You are a presentation writer. Return markdown only.", prompt) or ""
+
+
+def _parse_slides(markdown: str, max_slides: int = 10) -> List[Dict[str, Any]]:
+    slides: List[Dict[str, Any]] = []
+    current: Dict[str, Any] = {}
+    for line in markdown.splitlines():
+        if line.startswith("## "):
+            if current.get("title"):
+                slides.append(current)
+            current = {"title": line.replace("##", "").strip(), "bullets": []}
+            if len(slides) >= max_slides:
+                break
+        elif line.strip().startswith("- ") and current.get("title"):
+            current.setdefault("bullets", []).append(line.strip("- ").strip())
+    if current.get("title") and len(slides) < max_slides:
+        slides.append(current)
+    return slides[:max_slides]
+
+
+def _build_style_guide(
+    slides: List[Dict[str, Any]], deck_title: str = "", user_style: str = ""
+) -> str:
+    outline = "\n".join(
+        f"- {s.get('title','')}: {', '.join(s.get('bullets', [])[:2])}" for s in slides
+    )
+    prompt = (
+        "당신은 프레젠테이션 아트디렉터입니다. 슬라이드 전체에 일관되게 적용할 스타일 가이드를 한국어로 작성하세요.\n"
+        "- 3~5색 팔레트, 폰트 톤, 배경/질감, 조명/톤, 모티프/프레이밍 규칙 포함\n"
+        "- JSON이나 코드블럭 없이 문단으로 짧게 요약\n"
+        f"- 최대 슬라이드 개요:\n{outline}\n"
+        f"- 덱 제목: {deck_title or 'N/A'}\n"
+        f"- 사용자 톤(있으면): {user_style or 'N/A'}\n"
+    )
+    return chat_text("You are a concise art director. Respond in Korean.", prompt) or ""
+
+
+def _build_slide_image_prompt(
+    slide: Dict[str, Any], style_guide: str, deck_outline: str
+) -> str:
+    bullets = ", ".join(slide.get("bullets", [])[:3])
+    return (
+        "당신은 프레젠테이션용 이미지 디자이너입니다. 한 장의 이미지로 슬라이드 메시지가 전달되도록 작성하세요.\n"
+        f"- 슬라이드 제목: {slide.get('title','')}\n"
+        f"- 핵심 내용: {bullets}\n"
+        f"- 전체 슬라이드 개요: {deck_outline}\n"
+        f"- 스타일 가이드: {style_guide}\n"
+        "- 동일한 조명/팔레트/질감을 유지하고 과도한 텍스트는 넣지 말 것.\n"
+    )
+
+
+def _generate_slide_images(
+    slide_md: str, report_id: str, style_guide: str, deck_title: str = ""
+) -> Tuple[str, List[str]]:
+    slides = _parse_slides(slide_md)
+    if not slides:
+        return slide_md, []
+
+    deck_outline = "; ".join(f"{idx+1}. {s.get('title','')}" for idx, s in enumerate(slides))
+    bucket = _get_storage_bucket()
+    image_urls: List[str] = []
+    md_blocks: List[str] = []
+
+    for idx, slide in enumerate(slides):
+        prompt = _build_slide_image_prompt(slide, style_guide, deck_outline)
+        filename = f"slide-{idx+1}.png"
+        local_path = get_asset_dir(report_id) / filename
+        url = None
+        success = generate_image(prompt, local_path)
+        if success:
+            storage_path = f"deep-research/{report_id}/{filename}"
+            url = _upload_file_to_storage(bucket, storage_path, local_path, "image/png")
+        if url:
+            image_urls.append(url)
+
+        lines = []
+        if idx == 0:
+            title_line = deck_title.strip() if deck_title else slide.get("title", "").strip()
+            if title_line:
+                lines.append(f"# {title_line}")
+        slide_title = slide.get("title", "").strip()
+        if slide_title:
+            lines.append(f"## {slide_title}")
+        if url:
+            lines.append(f"![{slide_title or 'slide'}]({url})")
+        for b in slide.get("bullets", []):
+            lines.append(f"- {b}")
+        md_blocks.append("\n".join(lines))
+
+    slide_markdown = "\n\n---\n\n".join(md_blocks)
+    return slide_markdown, image_urls
