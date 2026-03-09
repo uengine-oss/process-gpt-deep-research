@@ -44,7 +44,7 @@ cp .env.example .env
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python main.py
+python main.py 
 ```
 
 기본 포트는 `3000`이며, `PORT` 환경 변수로 변경할 수 있습니다.
