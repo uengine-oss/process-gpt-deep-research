@@ -5,7 +5,10 @@ from fastmcp import Client
 
 
 def _get_hwpx_mcp_url() -> str:
-    return "http://localhost:1192/mcp"
+    return os.getenv(
+        "PROCESS_GPT_OFFICE_MCP_URL",
+        "http://process-gpt-office-mcp-service:1192/mcp",
+    )
 
 
 async def call_hwpx_mcp_generate(

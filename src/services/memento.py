@@ -6,12 +6,24 @@ import re
 from typing import Any, Dict, List, Optional
 
 import httpx
+from dotenv import load_dotenv
 
 from .llm import chat_json
 
 logger = logging.getLogger(__name__)
 
-MEMENTO_URL = os.getenv("MEMENTO_SERVICE_URL", "http://memento-service:8005")
+load_dotenv()
+
+DEFAULT_MEMENTO_DRIVE_FOLDER_ID = "1jKXip_MCDJFO7sXrvqhGD_i45_7wdp-v"
+
+
+def _get_memento_url() -> str:
+    return os.getenv("MEMENTO_SERVICE_URL", "http://memento-service:8005")
+
+
+def _get_drive_folder_param() -> Dict[str, str]:
+    folder_id = (os.getenv("MEMENTO_DRIVE_FOLDER_ID", DEFAULT_MEMENTO_DRIVE_FOLDER_ID) or "").strip()
+    return {"drive_folder_id": folder_id} if folder_id else {}
 
 
 def _docs_to_sources(raw_docs: List[Any]) -> List[Dict[str, Any]]:
@@ -46,8 +58,13 @@ async def search_memento(query: str, tenant_id: str) -> List[Dict[str, Any]]:
     if not tenant_id:
         return []
 
-    url = f"{MEMENTO_URL}/retrieve"
-    params = {"query": query, "tenant_id": tenant_id, "all_docs": "true"}
+    url = f"{_get_memento_url()}/retrieve"
+    params = {
+        "query": query,
+        "tenant_id": tenant_id,
+        "all_docs": "true",
+        **_get_drive_folder_param(),
+    }
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -69,19 +86,30 @@ async def _broad_search(query: str, tenant_id: str, top_k: int = 15) -> List[Dic
 
     memento가 top_k를 지원하지 않는 구버전(422 응답)이면 top_k 없이 재시도한다.
     """
-    url = f"{MEMENTO_URL}/retrieve"
+    url = f"{_get_memento_url()}/retrieve"
     async with httpx.AsyncClient(timeout=30) as client:
         try:
             response = await client.get(
                 url,
-                params={"query": query, "tenant_id": tenant_id, "all_docs": "true", "top_k": top_k},
+                params={
+                    "query": query,
+                    "tenant_id": tenant_id,
+                    "all_docs": "true",
+                    "top_k": top_k,
+                    **_get_drive_folder_param(),
+                },
             )
             # 구버전 memento가 top_k 파라미터를 모르는 경우 422를 반환할 수 있음
             if response.status_code == 422:
                 logger.warning("memento가 top_k 파라미터를 지원하지 않음 → top_k 없이 재시도")
                 response = await client.get(
                     url,
-                    params={"query": query, "tenant_id": tenant_id, "all_docs": "true"},
+                    params={
+                        "query": query,
+                        "tenant_id": tenant_id,
+                        "all_docs": "true",
+                        **_get_drive_folder_param(),
+                    },
                 )
             response.raise_for_status()
             data = response.json()
@@ -96,8 +124,8 @@ async def _get_chunks_metadata(tenant_id: str, file_name: str) -> List[Dict[str,
 
     엔드포인트가 없는 구버전(404/422)이면 빈 리스트를 반환해 폴백 흐름으로 이어진다.
     """
-    url = f"{MEMENTO_URL}/documents/chunks-metadata"
-    params = {"tenant_id": tenant_id, "file_name": file_name}
+    url = f"{_get_memento_url()}/documents/chunks-metadata"
+    params = {"tenant_id": tenant_id, "file_name": file_name, **_get_drive_folder_param()}
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(url, params=params)
@@ -124,8 +152,13 @@ async def _retrieve_by_indices(
     """
     if not chunk_indices:
         return []
-    url = f"{MEMENTO_URL}/retrieve-by-indices"
-    payload = {"tenant_id": tenant_id, "file_name": file_name, "chunk_indices": chunk_indices}
+    url = f"{_get_memento_url()}/retrieve-by-indices"
+    payload = {
+        "tenant_id": tenant_id,
+        "file_name": file_name,
+        "chunk_indices": chunk_indices,
+        **_get_drive_folder_param(),
+    }
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(url, json=payload)

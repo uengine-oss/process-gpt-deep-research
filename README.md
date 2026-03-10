@@ -36,6 +36,7 @@ cp .env.example .env
 
 선택 변수:
 - `MEMENTO_SERVICE_URL` (기본값: `http://memento-service:8005`)
+- `PROCESS_GPT_OFFICE_MCP_URL` (기본값: `http://process-gpt-office-mcp-service:1192/mcp`)
 - `ENV` (예: `dev`)
 - `POLLING_TENANT_ID` (dev 환경에서 폴링 시)
 
