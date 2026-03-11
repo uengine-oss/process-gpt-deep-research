@@ -135,6 +135,34 @@ async def fetch_workitem_query(todo_id: Optional[str]) -> Optional[str]:
     return await asyncio.to_thread(_sync)
 
 
+async def fetch_latest_done_workitem(
+    proc_inst_id: Optional[str], activity_id: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    if not proc_inst_id or not activity_id:
+        return None
+
+    def _sync() -> Optional[Dict[str, Any]]:
+        try:
+            supabase = get_db_client()
+            resp = (
+                supabase.table("todolist")
+                .select("id,activity_id,activity_name,tool,output,updated_at,description,query")
+                .eq("proc_inst_id", proc_inst_id)
+                .eq("activity_id", activity_id)
+                .eq("status", "DONE")
+                .order("updated_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if resp.data:
+                return resp.data[0]
+            return None
+        except Exception as e:
+            _handle_db_error("참조워크아이템조회", e)
+            return None
+
+    return await asyncio.to_thread(_sync)
+
 async def fetch_human_response(todo_id: Optional[str], job_id: Optional[str]) -> Optional[Dict[str, Any]]:
     if not todo_id or not job_id:
         return None

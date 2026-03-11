@@ -17,7 +17,7 @@ from ..formatting.report_formatting import (
     _format_form_context,
     _summarize_sources,
 )
-from ..runners.research_utils import _resolve_query_from_history
+from ..runners.research_utils import _resolve_query_from_history, _resolve_query_from_references
 from ..services.charts import build_chart_markdown, normalize_chart_specs, render_chart
 from ..services.llm import chat_text
 from ..services.research import build_chart_specs, build_plan, build_report_prompt
@@ -35,31 +35,67 @@ from ..storage.image_markers import _replace_image_markers_with_storage
 logger = logging.getLogger("research-custom-runner")
 
 
+def _preview_text(value: Optional[str], limit: int = 200) -> str:
+    if not value:
+        return ""
+    text = str(value).replace("\n", "\\n")
+    if len(text) > limit:
+        return text[:limit] + "..."
+    return text
+
+
 async def generate_report_markdown(
     row: Dict[str, Any], template_schema_summary: Optional[str] = None
 ) -> Dict[str, Any]:
     todo_id = row.get("id")
     proc_inst_id = row.get("root_proc_inst_id") or row.get("proc_inst_id")
     tenant_id = row.get("tenant_id", "")
-    query = (row.get("query") or row.get("description") or "").strip()
-    if not query:
-        query = "업무 설명이 비어 있습니다. 가능한 범위에서 결과를 생성하세요."
+    base_query = (row.get("query") or row.get("description") or "").strip()
 
     raw_query = row.get("query")
     if not raw_query:
         raw_query = await fetch_workitem_query(str(todo_id))
     workitem_query = _extract_query_from_workitem(raw_query or "")
     history_query = await _resolve_query_from_history(proc_inst_id)
-    if workitem_query:
+    reference_query = await _resolve_query_from_references(
+        proc_inst_id, row.get("reference_ids")
+    )
+    if reference_query:
+        query_source = "reference"
+        query = reference_query
+        instruction = workitem_query or base_query
+        if instruction:
+            query = f"{reference_query}\n\nInstruction:\n{instruction}"
+    elif workitem_query:
         query_source = "workitem.inputdata"
         query = workitem_query
     elif history_query:
         query_source = "history"
         query = history_query
+    elif base_query:
+        query_source = "workitem"
+        query = base_query
     else:
         query_source = "workitem"
+        query = "업무 설명이 비어 있습니다. 가능한 범위에서 결과를 생성하세요."
 
     logger.info("실행 시작: todo_id=%s proc_inst_id=%s tenant_id=%s", todo_id, proc_inst_id, tenant_id)
+    logger.info("reference_ids=%s", row.get("reference_ids"))
+    logger.info(
+        "raw_query_present=%s raw_query_preview=%s",
+        bool(raw_query),
+        _preview_text(raw_query),
+    )
+    logger.info(
+        "workitem_query_present=%s workitem_query_preview=%s",
+        bool(workitem_query),
+        _preview_text(workitem_query),
+    )
+    logger.info(
+        "history_query_present=%s history_query_preview=%s",
+        bool(history_query),
+        _preview_text(history_query),
+    )
     logger.info("입력 query(%s): %s", query_source, query)
     logger.info("tool=%s activity_name=%s", row.get("tool"), row.get("activity_name"))
 

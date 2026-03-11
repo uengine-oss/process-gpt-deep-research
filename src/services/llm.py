@@ -1,8 +1,11 @@
 import json
+import logging
 import os
 from typing import Any, Dict, Iterator, Optional
 
 from openai import OpenAI
+
+logger = logging.getLogger("research-custom-llm")
 
 
 def get_client() -> OpenAI:
@@ -18,20 +21,30 @@ def get_model_name() -> str:
 
 def chat_json(system_prompt: str, user_prompt: str) -> Dict[str, Any]:
     client = get_client()
-    response = client.chat.completions.create(
-        model=get_model_name(),
-        # temperature=0.2,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
-    content = response.choices[0].message.content or "{}"
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        return {"error": "invalid_json", "raw": content}
+    last_raw: str = ""
+    for attempt in range(1, 4):
+        response = client.chat.completions.create(
+            model=get_model_name(),
+            # temperature=0.2,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        content = response.choices[0].message.content or "{}"
+        last_raw = content
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "chat_json parse 실패 (attempt=%s/%s): %s | raw=%s",
+                attempt,
+                3,
+                exc,
+                content,
+            )
+    return {"error": "invalid_json", "raw": last_raw}
 
 
 def chat_json_schema(
@@ -50,20 +63,30 @@ def chat_json_schema(
         },
     }
     try:
-        response = client.chat.completions.create(
-            model=get_model_name(),
-            # temperature=0.2,
-            response_format=response_format,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-        content = response.choices[0].message.content or "{}"
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            return {"error": "invalid_json", "raw": content}
+        last_raw: str = ""
+        for attempt in range(1, 4):
+            response = client.chat.completions.create(
+                model=get_model_name(),
+                # temperature=0.2,
+                response_format=response_format,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+            content = response.choices[0].message.content or "{}"
+            last_raw = content
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "chat_json_schema parse 실패 (attempt=%s/%s): %s | raw=%s",
+                    attempt,
+                    3,
+                    exc,
+                    content,
+                )
+        return {"error": "invalid_json", "raw": last_raw}
     except Exception:
         return chat_json(system_prompt, user_prompt)
 

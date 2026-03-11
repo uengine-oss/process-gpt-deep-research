@@ -23,6 +23,15 @@ from .services.template_registry import get_template_handlers, group_template_it
 logger = logging.getLogger("research-custom-agent-sdk")
 
 
+def _preview_text(value: Any, limit: int = 200) -> str:
+    if value is None:
+        return ""
+    text = str(value).replace("\n", "\\n")
+    if len(text) > limit:
+        return text[:limit] + "..."
+    return text
+
+
 class DeepResearchExecutor(AgentExecutor):
     def __init__(self) -> None:
         self._cancelled = False
@@ -83,6 +92,19 @@ class DeepResearchServer(ProcessGPTAgentServer):
                         f"activity_name={task_record.get('activity_name')}"
                     ),
                     DEBUG_LEVEL_BASIC,
+                )
+                write_log_message(
+                    f"[JOB META] reference_ids={task_record.get('reference_ids')}"
+                )
+                write_log_message(
+                    "[JOB META] raw_query_present="
+                    f"{bool(task_record.get('query'))} "
+                    f"raw_query_preview={_preview_text(task_record.get('query'))}"
+                )
+                write_log_message(
+                    "[JOB META] description_present="
+                    f"{bool(task_record.get('description'))} "
+                    f"description_preview={_preview_text(task_record.get('description'))}"
                 )
 
                 try:

@@ -13,7 +13,11 @@ from ..formatting.report_formatting import (
     _format_sources_for_docx,
     _format_table_template,
 )
-from ..runners.research_utils import _resolve_query_from_history, _search_sources_parallel
+from ..runners.research_utils import (
+    _resolve_query_from_history,
+    _resolve_query_from_references,
+    _search_sources_parallel,
+)
 from ..services.llm import chat_json
 from ..services.memento import search_memento_smart
 from ..services.research import build_plan, filter_tavily_sources
@@ -1069,23 +1073,34 @@ async def generate_research_context(
     todo_id = row.get("id")
     proc_inst_id = row.get("root_proc_inst_id") or row.get("proc_inst_id")
     tenant_id = str(row.get("tenant_id") or "")
-    query = (row.get("query") or row.get("description") or "").strip()
-    if not query:
-        query = "업무 설명이 비어 있습니다. 가능한 범위에서 결과를 생성하세요."
+    base_query = (row.get("query") or row.get("description") or "").strip()
 
     raw_query = row.get("query")
     if not raw_query:
         raw_query = await fetch_workitem_query(str(todo_id))
     workitem_query = _extract_query_from_workitem(raw_query or "")
     history_query = await _resolve_query_from_history(proc_inst_id)
-    if workitem_query:
+    reference_query = await _resolve_query_from_references(
+        proc_inst_id, row.get("reference_ids")
+    )
+    if reference_query:
+        query_source = "reference"
+        query = reference_query
+        instruction = workitem_query or base_query
+        if instruction:
+            query = f"{reference_query}\n\nInstruction:\n{instruction}"
+    elif workitem_query:
         query_source = "workitem.inputdata"
         query = workitem_query
     elif history_query:
         query_source = "history"
         query = history_query
+    elif base_query:
+        query_source = "workitem"
+        query = base_query
     else:
         query_source = "workitem"
+        query = "업무 설명이 비어 있습니다. 가능한 범위에서 결과를 생성하세요."
 
     logger.info(
         "리서치 컨텍스트 생성 시작: todo_id=%s proc_inst_id=%s tenant_id=%s",
