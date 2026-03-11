@@ -143,6 +143,22 @@ async def _get_chunks_metadata(tenant_id: str, file_name: str) -> List[Dict[str,
         return []
 
 
+async def _list_documents(tenant_id: str) -> List[str]:
+    """memento /documents/list를 호출해 문서명 목록을 반환한다."""
+    url = f"{_get_memento_url()}/documents/list"
+    params = {"tenant_id": tenant_id, **_get_drive_folder_param()}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+        files = data.get("files") or []
+        return [str(name) for name in files if name]
+    except Exception as exc:
+        logger.warning("documents/list 호출 실패: %s", exc)
+        return []
+
+
 async def _retrieve_by_indices(
     tenant_id: str, file_name: str, chunk_indices: List[int]
 ) -> List[Dict[str, Any]]:
@@ -391,20 +407,24 @@ async def search_memento_smart(
 
     logger.info("search_memento_smart 시작 (query=%s)", query)
 
-    # Step 1: 브로드 검색으로 상위 문서 파악
-    broad_sources = await _broad_search(query, tenant_id, top_k=15)
-    if not broad_sources:
-        logger.info("memento 브로드 검색 결과 없음")
-        return []
+    # Step 1: 폴더 전체 문서 목록 조회 (실패 시 브로드 검색 폴백)
+    unique_file_names: List[str] = await _list_documents(tenant_id)
+    broad_sources: List[Dict[str, Any]] = []
+    if not unique_file_names:
+        broad_sources = await _broad_search(query, tenant_id, top_k=15)
+        if not broad_sources:
+            logger.info("memento 브로드 검색 결과 없음")
+            return []
+        unique_file_names = list(
+            dict.fromkeys(s["_file_name"] for s in broad_sources if s.get("_file_name"))
+        )
+        if not unique_file_names:
+            return broad_sources
+        logger.info("문서 후보 목록(브로드): %s", unique_file_names)
+    else:
+        logger.info("문서 후보 목록(전체): %s", unique_file_names)
 
     # Step 2: LLM으로 쿼리에 필요한 문서 여러 개 선택
-    unique_file_names: List[str] = list(
-        dict.fromkeys(s["_file_name"] for s in broad_sources if s.get("_file_name"))
-    )
-    if not unique_file_names:
-        return broad_sources
-
-    logger.info("문서 후보 목록: %s", unique_file_names)
     max_docs = len(unique_file_names)
     selected_docs: List[str] = await asyncio.to_thread(
         _select_documents_with_llm, query, unique_file_names, max_docs
