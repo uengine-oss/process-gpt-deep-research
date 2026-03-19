@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -34,6 +35,10 @@ class EventLogger:
         serializable = json.loads(json.dumps(record, default=str))
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(record_event(serializable))
+            # Blocking LLM 호출 중에도 이벤트가 즉시 반영되도록 별도 스레드로 전송
+            threading.Thread(
+                target=lambda: asyncio.run(record_event(serializable)),
+                daemon=True,
+            ).start()
         except RuntimeError:
             asyncio.run(record_event(serializable))

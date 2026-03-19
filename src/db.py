@@ -135,6 +135,29 @@ async def fetch_workitem_query(todo_id: Optional[str]) -> Optional[str]:
     return await asyncio.to_thread(_sync)
 
 
+async def fetch_form_def(form_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
+    if not form_id:
+        return None
+
+    def _sync() -> Optional[Dict[str, Any]]:
+        try:
+            supabase = get_db_client()
+            query = (
+                supabase.table("form_def")
+                .select("id, fields_json, html")
+                .eq("id", form_id)
+            )
+            if tenant_id:
+                query = query.eq("tenant_id", tenant_id)
+            resp = query.single().execute()
+            return resp.data or None
+        except Exception as e:
+            _handle_db_error("폼정의조회", e)
+            return None
+
+    return await asyncio.to_thread(_sync)
+
+
 async def fetch_latest_done_workitem(
     proc_inst_id: Optional[str], activity_id: Optional[str]
 ) -> Optional[Dict[str, Any]]:

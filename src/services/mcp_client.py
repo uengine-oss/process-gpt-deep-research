@@ -11,6 +11,16 @@ def _get_hwpx_mcp_url() -> str:
     )
 
 
+def _get_hwpx_mcp_timeout_seconds() -> float:
+    raw = os.getenv("PROCESS_GPT_OFFICE_MCP_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return 900.0
+    try:
+        return float(raw)
+    except ValueError:
+        return 900.0
+
+
 async def call_hwpx_mcp_generate(
     *,
     template_url: str,
@@ -25,7 +35,8 @@ async def call_hwpx_mcp_generate(
         "report_description": report_description,
         "reference_text": reference_text,
     }
-    async with Client(url) as client:
+    timeout_seconds = _get_hwpx_mcp_timeout_seconds()
+    async with Client(url, timeout=timeout_seconds) as client:
         result = await client.call_tool("generate_hwpx", payload)
 
     if isinstance(result, dict):

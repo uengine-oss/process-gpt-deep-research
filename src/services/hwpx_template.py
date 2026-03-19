@@ -99,10 +99,15 @@ async def generate_hwpx_from_template(
         reference_text="",
     )
     base64_data = mcp_result.get("base64_data") if isinstance(mcp_result, dict) else None
-    if not base64_data:
-        return None
+    file_url = mcp_result.get("file_url") if isinstance(mcp_result, dict) else None
     output_path = Path(tempfile.mkdtemp()) / output_name
-    output_path.write_bytes(base64.b64decode(base64_data))
+    if base64_data:
+        output_path.write_bytes(base64.b64decode(base64_data))
+    elif file_url:
+        downloaded_path = _download_hwpx(file_url)
+        output_path.write_bytes(downloaded_path.read_bytes())
+    else:
+        return None
 
     storage_path = f"deep-research/{report_id}/{output_name}"
     public_url = _upload_hwpx(output_path, storage_path)

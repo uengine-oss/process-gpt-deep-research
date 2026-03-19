@@ -1,8 +1,10 @@
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 
 from ..db import (
+    fetch_form_def,
     fetch_form_types,
     fetch_participants_info,
     fetch_workitem_query,
@@ -14,6 +16,9 @@ from ..formatting.report_formatting import (
     _build_output_payload,
     _crew_type_for_form,
     _extract_query_from_workitem,
+    _extract_input_data,
+    _build_field_label_map,
+    _apply_label_aliases,
     _format_form_context,
     _summarize_sources,
 )
@@ -25,6 +30,7 @@ from ..services.storage import create_report_id, get_asset_dir
 from ..services.tavily import search_tavily
 from ..slides.slide_generation import (
     _build_slide_markdown,
+    _build_slide_markdown_from_research,
     _build_style_guide,
     _generate_slide_images,
     _parse_slides,
@@ -44,6 +50,39 @@ def _preview_text(value: Optional[str], limit: int = 200) -> str:
     return text
 
 
+def _extract_slide_style(values: Dict[str, Any]) -> Optional[str]:
+    if not values:
+        return None
+    for key in ("slide_style", "style", "tone", "슬라이드 스타일", "스타일"):
+        val = values.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
+def _extract_slide_count(values: Dict[str, Any]) -> Optional[int]:
+    if not values:
+        return None
+    candidates: List[str] = []
+    for key, value in values.items():
+        if not isinstance(value, str):
+            continue
+        key_lower = str(key).lower()
+        if any(token in key_lower for token in ("page", "slide", "count", "페이지", "슬라이드")):
+            candidates.append(value)
+    if not candidates:
+        return None
+    for text in candidates:
+        match = re.search(r"(\d+)\s*페이지", text)
+        if match:
+            return int(match.group(1))
+    for text in candidates:
+        match = re.search(r"(\d+)", text)
+        if match:
+            return int(match.group(1))
+    return None
+
+
 async def generate_report_markdown(
     row: Dict[str, Any], template_schema_summary: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -56,6 +95,23 @@ async def generate_report_markdown(
     if not raw_query:
         raw_query = await fetch_workitem_query(str(todo_id))
     workitem_query = _extract_query_from_workitem(raw_query or "")
+    input_form_id, input_values = _extract_input_data(raw_query or "")
+    input_named: Dict[str, Any] = {}
+    if input_form_id and input_values:
+        form_def = await fetch_form_def(input_form_id, tenant_id)
+        label_map = _build_field_label_map(form_def.get("fields_json") if form_def else None)
+        input_named = _apply_label_aliases(input_values, label_map)
+    else:
+        input_named = dict(input_values or {})
+    user_style = _extract_slide_style(input_named)
+    slide_count = _extract_slide_count(input_named)
+    if input_named:
+        logger.info(
+            "input_data_mapped keys=%s user_style=%s slide_count=%s",
+            list(input_named.keys()),
+            user_style,
+            slide_count,
+        )
     history_query = await _resolve_query_from_history(proc_inst_id)
     reference_query = await _resolve_query_from_references(
         proc_inst_id, row.get("reference_ids")
@@ -102,6 +158,21 @@ async def generate_report_markdown(
     participants = await fetch_participants_info(row.get("user_id", ""))
     proc_form_id, form_types, _form_html = await fetch_form_types(row.get("tool", ""), tenant_id)
     logger.info("form_id=%s form_types=%s", proc_form_id, [f.get("key") for f in (form_types or [])])
+    has_slide_form = any(
+        ("slide" in str(item.get("type") or "").lower())
+        or ("slide" in str(item.get("tag") or "").lower())
+        for item in form_types or []
+    )
+    has_non_slide_form = any(
+        not (
+            ("slide" in str(item.get("type") or "").lower())
+            or ("slide" in str(item.get("tag") or "").lower())
+        )
+        for item in form_types or []
+    )
+    slide_only = has_slide_form and not has_non_slide_form
+    if slide_only:
+        logger.info("슬라이드 전용 폼 감지: 보고서 마크다운 생성 생략")
 
     event_logger = EventLogger(crew_type="report")
     job_id = f"final_report_merge-{int(time.time())}"
@@ -123,6 +194,30 @@ async def generate_report_markdown(
     )
 
     form_context = _format_form_context(form_types)
+    # 폼별 작업 시작 이벤트를 미리 발행해 타임라인에 즉시 표시
+    for item in form_types or []:
+        key = item.get("key") or ""
+        if not key:
+            continue
+        type_val = str(item.get("type") or "")
+        tag_val = str(item.get("tag") or "")
+        name = item.get("name") or item.get("label") or key
+        crew_type = _crew_type_for_form(type_val, tag_val)
+        per_field_logger = EventLogger(crew_type=crew_type)
+        per_field_job_id = f"{job_id}-{key}"
+        per_field_logger.emit(
+            "task_started",
+            {
+                "role": "Form filler",
+                "goal": f"Fill form field '{name}'",
+                "agent_profile": "/images/chat-icon.png",
+                "name": name,
+                "task_description": query,
+            },
+            job_id=per_field_job_id,
+            todo_id=todo_id,
+            proc_inst_id=proc_inst_id,
+        )
     if template_schema_summary:
         form_context = (
             f"{form_context}\n\nTemplate schema summary:\n{template_schema_summary}"
@@ -158,55 +253,68 @@ async def generate_report_markdown(
         )
 
     report_id = str(todo_id) if todo_id else create_report_id(query)
-    chart_raw = build_chart_specs(query, sources)
-    charts = normalize_chart_specs(chart_raw)
-    if charts:
-        logger.info("chart_specs_count=%s", len(charts))
     chart_sections = []
-    asset_dir = get_asset_dir(report_id)
-    for index, chart in enumerate(charts[:3], start=1):
-        filename = f"chart-{index}.png"
-        try:
-            render_chart(chart, asset_dir / filename)
-            storage_path = f"deep-research/{report_id}/chart-{index}.png"
-            url = _upload_file_to_storage(
-                _get_storage_bucket(),
-                storage_path,
-                asset_dir / filename,
-                "image/png",
-            )
-            if not url:
-                url = f"/api/report/{report_id}/asset/{filename}"
-            chart_sections.append(
-                build_chart_markdown(chart.get("title") or f"Chart {index}", url, chart.get("caption"))
-            )
-            logger.info("chart_rendered=%s", filename)
-        except Exception:
-            continue
+    markdown = ""
+    slide_markdown_seed = None
 
-    prompts = build_report_prompt(query, outline, sources)
-    if template_schema_summary:
-        prompts["user_prompt"] += f"\n\nTemplate schema summary:\n{template_schema_summary}\n"
-        prompts["user_prompt"] += (
-            "\n작성 규칙:\n"
-            "- optional/선택 섹션은 자료가 충분할 때만 작성하고 부족하면 생략해도 됩니다.\n"
-            "- 표는 헤더와 열 수를 맞추고, 필요 시 간결한 수치/라벨로 채우세요.\n"
-        )
-    sources_summary = _summarize_sources(sources)
-    if sources_summary:
-        prompts["user_prompt"] += f"\n\n참고 소스 요약:\n{sources_summary}\n"
-    if chart_sections:
-        prompts["user_prompt"] += (
-            "\n\nInclude these visualization blocks in the report where relevant:\n"
-            + "\n\n".join(chart_sections)
-        )
-    logger.info("보고서 작성 시작 (sources=%s)", len(sources))
+    if not slide_only:
+        chart_raw = build_chart_specs(query, sources)
+        charts = normalize_chart_specs(chart_raw)
+        if charts:
+            logger.info("chart_specs_count=%s", len(charts))
+        asset_dir = get_asset_dir(report_id)
+        for index, chart in enumerate(charts[:3], start=1):
+            filename = f"chart-{index}.png"
+            try:
+                render_chart(chart, asset_dir / filename)
+                storage_path = f"deep-research/{report_id}/chart-{index}.png"
+                url = _upload_file_to_storage(
+                    _get_storage_bucket(),
+                    storage_path,
+                    asset_dir / filename,
+                    "image/png",
+                )
+                if not url:
+                    url = f"/api/report/{report_id}/asset/{filename}"
+                chart_sections.append(
+                    build_chart_markdown(chart.get("title") or f"Chart {index}", url, chart.get("caption"))
+                )
+                logger.info("chart_rendered=%s", filename)
+            except Exception:
+                continue
 
-    markdown = chat_text(prompts["system_prompt"], prompts["user_prompt"])
-    if chart_sections and "![" not in (markdown or ""):
-        markdown = (markdown or "") + "\n\n## 시각화\n\n" + "\n\n".join(chart_sections)
-    markdown = _replace_image_markers_with_storage(markdown or "", report_id)
-    logger.info("보고서 작성 완료 (len=%s)", len(markdown or ""))
+        prompts = build_report_prompt(query, outline, sources)
+        if template_schema_summary:
+            prompts["user_prompt"] += f"\n\nTemplate schema summary:\n{template_schema_summary}\n"
+            prompts["user_prompt"] += (
+                "\n작성 규칙:\n"
+                "- optional/선택 섹션은 자료가 충분할 때만 작성하고 부족하면 생략해도 됩니다.\n"
+                "- 표는 헤더와 열 수를 맞추고, 필요 시 간결한 수치/라벨로 채우세요.\n"
+            )
+        sources_summary = _summarize_sources(sources)
+        if sources_summary:
+            prompts["user_prompt"] += f"\n\n참고 소스 요약:\n{sources_summary}\n"
+        if chart_sections:
+            prompts["user_prompt"] += (
+                "\n\nInclude these visualization blocks in the report where relevant:\n"
+                + "\n\n".join(chart_sections)
+            )
+        logger.info("보고서 작성 시작 (sources=%s)", len(sources))
+
+        markdown = chat_text(prompts["system_prompt"], prompts["user_prompt"])
+        if chart_sections and "![" not in (markdown or ""):
+            markdown = (markdown or "") + "\n\n## 시각화\n\n" + "\n\n".join(chart_sections)
+        markdown = _replace_image_markers_with_storage(markdown or "", report_id)
+        logger.info("보고서 작성 완료 (len=%s)", len(markdown or ""))
+    else:
+            slide_markdown_seed = _build_slide_markdown_from_research(
+                query,
+                outline,
+                sources,
+                deck_title=workitem_query or query,
+                slide_count=slide_count,
+                style=user_style,
+            )
 
     return {
         "todo_id": todo_id,
@@ -219,6 +327,9 @@ async def generate_report_markdown(
         "event_logger": event_logger,
         "job_id": job_id,
         "markdown": markdown,
+        "slide_markdown_seed": slide_markdown_seed,
+        "user_style": user_style,
+        "slide_count": slide_count,
         "report_id": report_id,
     }
 
@@ -235,6 +346,9 @@ async def run_deep_research(row: Dict[str, Any]) -> None:
     event_logger = report["event_logger"]
     job_id = report["job_id"]
     markdown = report["markdown"]
+    slide_markdown_seed = report.get("slide_markdown_seed")
+    user_style = report.get("user_style")
+    slide_count = report.get("slide_count")
     report_id = report["report_id"]
 
     # 슬라이드가 필요한 경우 보고서 기반 슬라이드 마크다운 및 이미지 생성
@@ -247,16 +361,19 @@ async def run_deep_research(row: Dict[str, Any]) -> None:
     slide_images: List[str] = []
     if has_slide_form:
         # 스타일 가이드와 슬라이드 MD 생성
-        slide_md_raw = _build_slide_markdown(markdown)
+        slide_md_raw = slide_markdown_seed or _build_slide_markdown(
+            markdown, slide_count=slide_count, style=user_style
+        )
         slides_for_style = _parse_slides(slide_md_raw)
         style_guide = _build_style_guide(
-            slides_for_style, deck_title=workitem_query or query, user_style=None
+            slides_for_style, deck_title=workitem_query or query, user_style=user_style
         )
         slide_markdown, slide_images = _generate_slide_images(
             slide_md_raw,
             report_id,
             style_guide,
             deck_title=workitem_query or query,
+            slide_count=slide_count,
         )
 
     # 폼별 개별 작업 결과 이벤트 생성 (배포 환경과 유사하게 다건 노출)
@@ -271,21 +388,6 @@ async def run_deep_research(row: Dict[str, Any]) -> None:
         crew_type = _crew_type_for_form(type_val, tag_val)
         per_field_logger = EventLogger(crew_type=crew_type)
         per_field_job_id = f"{job_id}-{key}"
-
-        # 시작 이벤트
-        per_field_logger.emit(
-            "task_started",
-            {
-                "role": "Form filler",
-                "goal": f"Fill form field '{name}'",
-                "agent_profile": "/images/chat-icon.png",
-                "name": name,
-                "task_description": query,
-            },
-            job_id=per_field_job_id,
-            todo_id=todo_id,
-            proc_inst_id=proc_inst_id,
-        )
 
         # 완료 이벤트 (슬라이드의 경우 이미지 배열 포함)
         data_payload = {key: form_outputs[key]}

@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..services.llm import chat_text
 
@@ -26,6 +26,57 @@ def _pick_output_key(form_types: List[Dict[str, Any]]) -> Optional[str]:
         if key:
             return key
     return None
+
+
+def _extract_input_data(raw_query: str) -> Tuple[Optional[str], Dict[str, Any]]:
+    if not raw_query or not isinstance(raw_query, str):
+        return None, {}
+    if "[InputData]" not in raw_query:
+        return None, {}
+    try:
+        _, payload = raw_query.split("[InputData]", 1)
+        payload = payload.strip()
+        if not payload:
+            return None, {}
+        data = json.loads(payload)
+        if isinstance(data, dict) and data:
+            form_id = next(iter(data.keys()))
+            form_values = data.get(form_id)
+            if isinstance(form_values, dict):
+                return form_id, form_values
+    except Exception:
+        return None, {}
+    return None, {}
+
+
+def _build_field_label_map(fields_json: Any) -> Dict[str, str]:
+    label_map: Dict[str, str] = {}
+    if isinstance(fields_json, list):
+        for item in fields_json:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("key")
+            label = (
+                item.get("text")
+                or item.get("label")
+                or item.get("name")
+                or item.get("title")
+                or ""
+            )
+            if isinstance(key, str) and isinstance(label, str) and label.strip():
+                label_map[key] = label.strip()
+    return label_map
+
+
+def _apply_label_aliases(values: Dict[str, Any], label_map: Dict[str, str]) -> Dict[str, Any]:
+    if not values:
+        return {}
+    merged = dict(values)
+    for key, value in values.items():
+        label = label_map.get(key)
+        if label and label not in merged:
+            merged[label] = value
+    return merged
 
 
 def _build_output_payload(proc_form_id: str, outputs: Dict[str, Any]) -> Dict[str, Any]:
@@ -228,6 +279,20 @@ def _extract_text_from_output(output: Any) -> Optional[str]:
     if isinstance(output, str):
         return output.strip() or None
     if isinstance(output, dict):
+        # 우선순위 키를 먼저 확인 (주제/목표/제목 등)
+        for key in (
+            "slide_topic",
+            "topic",
+            "title",
+            "subject",
+            "goal",
+            "request",
+            "prompt",
+            "query",
+        ):
+            val = output.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
         for key in ("text", "content", "report", "report_content", "result", "value"):
             val = output.get(key)
             if isinstance(val, str) and val.strip():
@@ -260,8 +325,16 @@ def _extract_query_from_workitem(raw_query: str) -> Optional[str]:
             if payload:
                 data = json.loads(payload)
                 if isinstance(data, dict):
-                    # common keys from report forms
-                    for key in ("report_purpose", "topic", "title", "subject", "goal", "request"):
+                    # common keys from report/slide forms
+                    for key in (
+                        "slide_topic",
+                        "topic",
+                        "title",
+                        "subject",
+                        "goal",
+                        "request",
+                        "report_purpose",
+                    ):
                         for form_val in data.values():
                             if isinstance(form_val, dict):
                                 val = form_val.get(key)
