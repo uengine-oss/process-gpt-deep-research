@@ -18,7 +18,13 @@ from processgpt_agent_sdk.utils.logger import (
 from .db import fetch_pending_task, fetch_proc_inst_source, save_task_result
 from .event_logger import EventLogger
 from .runners.research_runner import run_deep_research
-from .services.template_registry import get_template_handlers, group_template_items
+from .runners.research_utils import _resolve_template_files_from_references
+from .services.source_parser import parse_and_chunk_sources
+from .services.template_registry import (
+    get_template_handlers,
+    group_template_items,
+    split_source_items,
+)
 
 logger = logging.getLogger("research-custom-agent-sdk")
 
@@ -111,8 +117,45 @@ class DeepResearchServer(ProcessGPTAgentServer):
                     proc_inst_id = task_record.get("proc_inst_id")
                     if proc_inst_id:
                         source_items = await fetch_proc_inst_source(str(proc_inst_id))
+
+                        # 진행 상태용 EventLogger (핸들러 실행 전부터 사용)
+                        _evt = EventLogger(crew_type="report")
+                        _job_id = f"template_research-{task_id}"
+
+                        def _emit_progress(stage: str, detail: str) -> None:
+                            _evt.emit(
+                                "task_working",
+                                {"info": stage, "message": f"{stage} — {detail}"},
+                                job_id=_job_id,
+                                todo_id=str(task_id),
+                                proc_inst_id=str(proc_inst_id),
+                            )
+
+                        # ── 1단계: 이전 단계 file form에서 템플릿 파일 추출 시도 ──
+                        template_files = await _resolve_template_files_from_references(
+                            str(proc_inst_id), task_record.get("reference_ids"),
+                        )
+                        template_items, reference_items = split_source_items(
+                            source_items, template_files,
+                        )
+
+                        # ── 2단계: 참고자료 소스 파싱 + 청크 + 요약 ──
+                        source_chunks = None
+                        if reference_items and template_files:
+                            write_log_message(
+                                f"[SOURCE] 참고자료 파싱 시작: {len(reference_items)}개 파일"
+                            )
+                            source_chunks = await parse_and_chunk_sources(
+                                reference_items,
+                                on_progress=_emit_progress,
+                            )
+                            write_log_message(
+                                f"[SOURCE] 참고자료 파싱 완료: {len(source_chunks)}개 청크"
+                            )
+
+                        # ── 3단계: 템플릿 핸들러 실행 ──
                         handlers = get_template_handlers()
-                        grouped = group_template_items(source_items, handlers)
+                        grouped = group_template_items(template_items, handlers)
                         has_templates = any(grouped.get(h) for h in handlers)
 
                         if has_templates:
@@ -128,7 +171,14 @@ class DeepResearchServer(ProcessGPTAgentServer):
                                 write_log_message(
                                     f"[{handler.label}] proc_inst_id={proc_inst_id} count={len(items)}"
                                 )
-                                result = await handler.run(task_record, items)
+                                # 새 워크플로우(file form 템플릿)면 source_chunks 전달 (비어있어도 memento 건너뛰기 위해)
+                                if template_files:
+                                    try:
+                                        result = await handler.run(task_record, items, source_chunks=source_chunks or [])
+                                    except TypeError:
+                                        result = await handler.run(task_record, items)
+                                else:
+                                    result = await handler.run(task_record, items)
                                 event_logger = result.event_logger or event_logger
                                 job_id = result.job_id or job_id
                                 if result.outputs:

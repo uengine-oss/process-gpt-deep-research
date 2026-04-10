@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from logging.handlers import RotatingFileHandler
 import os
 import re
 import uuid
@@ -19,7 +18,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .services.charts import build_chart_markdown, normalize_chart_specs, render_chart
-from .services.images import generate_image, insert_image_blocks
+from .services.images import generate_image
 from .services.rewrite import rewrite_block
 from .services.llm import chat_json, chat_text, chat_text_stream
 from .services.research import (
@@ -52,22 +51,32 @@ from .polling import start_rewrite_loop
 
 load_dotenv()
 
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "deep-research-custom.log")
+# 재실행 시 기존 로그 삭제 후 새로 생성
+if os.path.exists(log_file):
+    os.unlink(log_file)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
-log_dir = "logs"
-os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, "deep-research-custom.log")
 root_logger = logging.getLogger()
-if not any(isinstance(h, RotatingFileHandler) for h in root_logger.handlers):
-    file_handler = RotatingFileHandler(
-        log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
-    )
+if not any(isinstance(h, logging.FileHandler) for h in root_logger.handlers):
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
     root_logger.addHandler(file_handler)
 logger = logging.getLogger("research-custom")
+
+from .config import (
+    LLM_PROVIDER, MODEL_NAME, IMAGE_MODEL_NAME,
+    WEB_SEARCH_ENABLED, MEMENTO_SEARCH_ENABLED,
+)
+logger.info("설정: LLM_PROVIDER=%s, MODEL=%s, IMAGE_MODEL=%s", LLM_PROVIDER, MODEL_NAME, IMAGE_MODEL_NAME)
+logger.info("설정: WEB_SEARCH=%s, MEMENTO_SEARCH=%s", WEB_SEARCH_ENABLED, MEMENTO_SEARCH_ENABLED)
+
 REWRITE_QUEUE_ENABLED = False
 
 @asynccontextmanager

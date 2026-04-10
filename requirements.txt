@@ -7,5 +7,7 @@ matplotlib
 google-genai
 supabase
 python-docx
+pdfplumber
+olefile
 fastmcp
 process-gpt-agent-sdk==0.2.11

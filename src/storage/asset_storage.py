@@ -42,7 +42,8 @@ def _upload_file_to_storage(
             return url
     except Exception:
         pass
-    base_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    from ..config import SUPABASE_URL
+    base_url = SUPABASE_URL.rstrip("/")
     if base_url:
         return f"{base_url}/storage/v1/object/public/{bucket}/{safe_path}"
     return None

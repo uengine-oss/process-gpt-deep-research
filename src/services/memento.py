@@ -1,29 +1,24 @@
 import asyncio
 import json
 import logging
-import os
 import re
 from typing import Any, Dict, List, Optional
 
 import httpx
-from dotenv import load_dotenv
 
 from .llm import chat_json
 
 logger = logging.getLogger(__name__)
 
-load_dotenv()
-
-DEFAULT_MEMENTO_DRIVE_FOLDER_ID = "1jKXip_MCDJFO7sXrvqhGD_i45_7wdp-v"
-
 
 def _get_memento_url() -> str:
-    return os.getenv("MEMENTO_SERVICE_URL", "http://memento-service:8005")
+    from ..config import MEMENTO_SERVICE_URL
+    return MEMENTO_SERVICE_URL
 
 
 def _get_drive_folder_param() -> Dict[str, str]:
-    folder_id = (os.getenv("MEMENTO_DRIVE_FOLDER_ID", DEFAULT_MEMENTO_DRIVE_FOLDER_ID) or "").strip()
-    return {"drive_folder_id": folder_id} if folder_id else {}
+    from ..config import MEMENTO_DRIVE_FOLDER_ID
+    return {"drive_folder_id": MEMENTO_DRIVE_FOLDER_ID} if MEMENTO_DRIVE_FOLDER_ID else {}
 
 
 def _docs_to_sources(raw_docs: List[Any]) -> List[Dict[str, Any]]:

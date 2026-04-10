@@ -1068,7 +1068,9 @@ async def _build_docx_output_single_call(
 
 
 async def generate_research_context(
-    row: Dict[str, Any], template_schema_summary: Optional[str] = None
+    row: Dict[str, Any],
+    template_schema_summary: Optional[str] = None,
+    skip_memento: bool = False,
 ) -> Dict[str, Any]:
     todo_id = row.get("id")
     proc_inst_id = row.get("root_proc_inst_id") or row.get("proc_inst_id")
@@ -1136,24 +1138,35 @@ async def generate_research_context(
     if template_schema_summary:
         form_context = f"{form_context}\n\nTemplate schema summary:\n{template_schema_summary}"
 
-    logger.debug("LLM build_plan input query: %s", query)
-    logger.debug("LLM build_plan form_context: %s", form_context)
-    plan = build_plan(query, form_context)
-    queries = plan.get("queries") or [query]
-    outline = plan.get("outline") or ["Overview", "Key Findings", "Conclusion"]
-    logger.debug("DOCX 계획 outline=%s", outline)
-    logger.debug("DOCX 검색 쿼리(%s): %s", len(queries), queries)
+    # source_chunks 워크플로우에서는 build_plan 건너뛰기 (웹검색/memento도 안 하므로 의미 없음)
+    if skip_memento:
+        logger.info("build_plan 건너뜀 (source_chunks 워크플로우)")
+        queries = []
+        outline = []
+    else:
+        logger.debug("LLM build_plan input query: %s", query)
+        logger.debug("LLM build_plan form_context: %s", form_context)
+        plan = build_plan(query, form_context)
+        queries = plan.get("queries") or [query]
+        outline = plan.get("outline") or ["Overview", "Key Findings", "Conclusion"]
+        logger.debug("DOCX 계획 outline=%s", outline)
+        logger.debug("DOCX 검색 쿼리(%s): %s", len(queries), queries)
+
+    from ..config import WEB_SEARCH_ENABLED, MEMENTO_SEARCH_ENABLED
+    _skip_memento = skip_memento or not MEMENTO_SEARCH_ENABLED
+    _skip_web = not WEB_SEARCH_ENABLED
 
     tavily_queries = queries
-    for search_query in tavily_queries:
-        event_logger.emit(
-            "tool_usage_started",
-            {"tool_name": "web_search", "query": search_query},
-            job_id=job_id,
-            todo_id=todo_id,
-            proc_inst_id=proc_inst_id,
-        )
-    if tenant_id:
+    if not _skip_web:
+        for search_query in tavily_queries:
+            event_logger.emit(
+                "tool_usage_started",
+                {"tool_name": "web_search", "query": search_query},
+                job_id=job_id,
+                todo_id=todo_id,
+                proc_inst_id=proc_inst_id,
+            )
+    if tenant_id and not _skip_memento:
         event_logger.emit(
             "tool_usage_started",
             {"tool_name": "memento_search", "query": query},
@@ -1161,22 +1174,29 @@ async def generate_research_context(
             todo_id=todo_id,
             proc_inst_id=proc_inst_id,
         )
-    tavily_sources, memento_sources = await asyncio.gather(
-        _search_sources_parallel(tavily_queries),
-        search_memento_smart(query, outline, tenant_id),
-    )
+    if _skip_memento:
+        reason = "source_chunks 사용" if skip_memento else "MEMENTO_SEARCH_ENABLED=false"
+        logger.info("memento RAG 건너뜀 (%s)", reason)
+        tavily_sources = await _search_sources_parallel(tavily_queries)
+        memento_sources = []
+    else:
+        tavily_sources, memento_sources = await asyncio.gather(
+            _search_sources_parallel(tavily_queries),
+            search_memento_smart(query, outline, tenant_id),
+        )
     tavily_sources = filter_tavily_sources(query, tavily_sources)
     tavily_sources = tavily_sources[:6]
     sources = memento_sources + tavily_sources
-    for search_query in tavily_queries:
-        event_logger.emit(
-            "tool_usage_finished",
-            {"tool_name": "web_search", "query": search_query, "info": "finished"},
-            job_id=job_id,
-            todo_id=todo_id,
-            proc_inst_id=proc_inst_id,
-        )
-    if tenant_id:
+    if not _skip_web:
+        for search_query in tavily_queries:
+            event_logger.emit(
+                "tool_usage_finished",
+                {"tool_name": "web_search", "query": search_query, "info": "finished"},
+                job_id=job_id,
+                todo_id=todo_id,
+                proc_inst_id=proc_inst_id,
+            )
+    if tenant_id and not _skip_memento:
         event_logger.emit(
             "tool_usage_finished",
             {"tool_name": "memento_search", "query": query, "info": f"finished ({len(memento_sources)} docs)"},

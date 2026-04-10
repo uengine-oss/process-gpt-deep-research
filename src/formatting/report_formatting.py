@@ -247,7 +247,7 @@ def _format_sources_for_docx(
         url = item.get("url") or ""
         content = (item.get("content") or "").strip()
         source_type = item.get("source") or "unknown"
-        logger.info("DOCX source content len=%d title=%s", len(content), title)
+        logger.info("source content len=%d title=%s", len(content), title)
 
         header = f"[{title}]"
         meta_lines = [f"source: {source_type}"]

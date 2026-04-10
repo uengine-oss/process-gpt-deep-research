@@ -10,14 +10,15 @@ logger = logging.getLogger("research-custom-images")
 
 
 def get_client() -> genai.Client:
-    api_key = os.getenv("GOOGLE_API_KEY", "").strip()
-    if not api_key:
+    from ..config import GOOGLE_API_KEY
+    if not GOOGLE_API_KEY:
         raise RuntimeError("GOOGLE_API_KEY is missing")
-    return genai.Client(api_key=api_key)
+    return genai.Client(api_key=GOOGLE_API_KEY)
 
 
 def get_image_model() -> str:
-    return "gemini-3.1-flash-image-preview"
+    from ..config import IMAGE_MODEL_NAME
+    return IMAGE_MODEL_NAME
 
 
 def generate_image(prompt: str, output_path: Path) -> bool:

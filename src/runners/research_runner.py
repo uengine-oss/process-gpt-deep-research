@@ -28,13 +28,7 @@ from ..services.llm import chat_text
 from ..services.research import build_chart_specs, build_plan, build_report_prompt
 from ..services.storage import create_report_id, get_asset_dir
 from ..services.tavily import search_tavily
-from ..slides.slide_generation import (
-    _build_slide_markdown,
-    _build_slide_markdown_from_research,
-    _build_style_guide,
-    _generate_slide_images,
-    _parse_slides,
-)
+from ..services.mcp_client import call_office_mcp_generate_slides
 from ..storage.asset_storage import _get_storage_bucket, _upload_file_to_storage
 from ..storage.image_markers import _replace_image_markers_with_storage
 
@@ -306,16 +300,6 @@ async def generate_report_markdown(
             markdown = (markdown or "") + "\n\n## 시각화\n\n" + "\n\n".join(chart_sections)
         markdown = _replace_image_markers_with_storage(markdown or "", report_id)
         logger.info("보고서 작성 완료 (len=%s)", len(markdown or ""))
-    else:
-            slide_markdown_seed = _build_slide_markdown_from_research(
-                query,
-                outline,
-                sources,
-                deck_title=workitem_query or query,
-                slide_count=slide_count,
-                style=user_style,
-            )
-
     return {
         "todo_id": todo_id,
         "proc_inst_id": proc_inst_id,
@@ -327,7 +311,8 @@ async def generate_report_markdown(
         "event_logger": event_logger,
         "job_id": job_id,
         "markdown": markdown,
-        "slide_markdown_seed": slide_markdown_seed,
+        "outline": outline,
+        "sources": sources,
         "user_style": user_style,
         "slide_count": slide_count,
         "report_id": report_id,
@@ -346,12 +331,13 @@ async def run_deep_research(row: Dict[str, Any]) -> None:
     event_logger = report["event_logger"]
     job_id = report["job_id"]
     markdown = report["markdown"]
-    slide_markdown_seed = report.get("slide_markdown_seed")
+    outline = report.get("outline") or []
+    sources = report.get("sources") or []
     user_style = report.get("user_style")
     slide_count = report.get("slide_count")
     report_id = report["report_id"]
 
-    # 슬라이드가 필요한 경우 보고서 기반 슬라이드 마크다운 및 이미지 생성
+    # 슬라이드가 필요한 경우 MCP를 통해 슬라이드 마크다운 및 이미지 생성
     has_slide_form = any(
         ("slide" in str(item.get("type") or "").lower())
         or ("slide" in str(item.get("tag") or "").lower())
@@ -360,21 +346,18 @@ async def run_deep_research(row: Dict[str, Any]) -> None:
     slide_markdown = None
     slide_images: List[str] = []
     if has_slide_form:
-        # 스타일 가이드와 슬라이드 MD 생성
-        slide_md_raw = slide_markdown_seed or _build_slide_markdown(
-            markdown, slide_count=slide_count, style=user_style
-        )
-        slides_for_style = _parse_slides(slide_md_raw)
-        style_guide = _build_style_guide(
-            slides_for_style, deck_title=workitem_query or query, user_style=user_style
-        )
-        slide_markdown, slide_images = _generate_slide_images(
-            slide_md_raw,
-            report_id,
-            style_guide,
+        slide_result = await call_office_mcp_generate_slides(
+            report_markdown=markdown or "",
+            research_goal=query if not markdown else "",
+            outline=outline if not markdown else [],
+            sources=sources if not markdown else [],
             deck_title=workitem_query or query,
-            slide_count=slide_count,
+            slide_count=slide_count or 0,
+            style=user_style or "",
+            report_id=report_id,
         )
+        slide_markdown = slide_result.get("slide_markdown") or None
+        slide_images = slide_result.get("image_urls") or []
 
     # 폼별 개별 작업 결과 이벤트 생성 (배포 환경과 유사하게 다건 노출)
     form_outputs = _build_form_outputs(form_types, markdown, slide_markdown)

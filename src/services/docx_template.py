@@ -883,7 +883,8 @@ def _upload_docx(file_path: Path, storage_path: str) -> Optional[str]:
     except Exception as e:
         logger.error("storage 업로드 실패: %s", e)
         return None
-    base_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    from ..config import SUPABASE_URL
+    base_url = SUPABASE_URL.rstrip("/")
     if base_url:
         return f"{base_url}/storage/v1/object/public/{STORAGE_BUCKET}/{quote(safe_path, safe='/-_.')}"
     return None
@@ -912,7 +913,8 @@ def _upload_image(file_path: Path, report_id: str, filename: str) -> Optional[st
     except Exception as e:
         logger.error("image 업로드 실패: %s", e)
         return None
-    base_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    from ..config import SUPABASE_URL
+    base_url = SUPABASE_URL.rstrip("/")
     if base_url:
         return f"{base_url}/storage/v1/object/public/{STORAGE_BUCKET}/{quote(safe_path, safe='/-_.')}"
     return None

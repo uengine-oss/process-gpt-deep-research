@@ -62,7 +62,8 @@ def _upload_hwpx(file_path: Path, storage_path: str) -> Optional[str]:
     except Exception as e:
         logger.error("storage 업로드 실패: %s", e)
         return None
-    base_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    from ..config import SUPABASE_URL
+    base_url = SUPABASE_URL.rstrip("/")
     if base_url:
         return f"{base_url}/storage/v1/object/public/{STORAGE_BUCKET}/{quote(safe_path, safe='/-_.')}"
     return None
@@ -91,12 +92,14 @@ async def generate_hwpx_from_template(
     project_context: str,
     project_title: str,
     image_prompts: Optional[list[dict]] = None,
+    source_chunks_json: str = "",
 ) -> Optional[Dict[str, str]]:
     mcp_result = await call_hwpx_mcp_generate(
         template_url=template_url,
         report_topic=project_title,
         report_description=project_context,
         reference_text="",
+        source_chunks_json=source_chunks_json,
     )
     base64_data = mcp_result.get("base64_data") if isinstance(mcp_result, dict) else None
     file_url = mcp_result.get("file_url") if isinstance(mcp_result, dict) else None

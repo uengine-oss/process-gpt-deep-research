@@ -28,10 +28,10 @@ async def fetch_pending_task(limit: int = 1) -> Optional[Dict[str, Any]]:
         def _sync() -> Optional[Dict[str, Any]]:
             supabase = get_db_client()
             consumer_id = sdk_db.get_consumer_id()
-            env = (os.getenv("ENV") or "").lower()
+            from .config import ENV, POLLING_TENANT_ID
             agent_orch = "deep-research-custom"
-            if env == "dev":
-                tenant_id = os.getenv("POLLING_TENANT_ID", "uengine")
+            if ENV == "dev":
+                tenant_id = POLLING_TENANT_ID
                 resp = supabase.rpc(
                     "deep_research_fetch_pending_task_dev",
                     {

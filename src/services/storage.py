@@ -92,11 +92,11 @@ def get_report(report_id: str) -> Optional[str]:
 
 
 def update_report(report_id: str, markdown: str) -> None:
-  ensure_storage()
-  report_path = get_report_path(report_id)
-  if not report_path.exists():
-    raise FileNotFoundError(report_id)
-  report_path.write_text(markdown, encoding="utf-8")
+    ensure_storage()
+    report_path = get_report_path(report_id)
+    if not report_path.exists():
+        raise FileNotFoundError(report_id)
+    report_path.write_text(markdown, encoding="utf-8")
 
 
 def get_messages(report_id: str) -> List[Dict[str, Any]]:
