@@ -2,6 +2,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+LABEL org.opencontainers.image.source="https://github.com/uengine-oss/process-gpt-deep-research"
+
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PORT=3000
