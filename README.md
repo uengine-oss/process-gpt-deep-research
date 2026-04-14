@@ -81,4 +81,4 @@ docker run --rm -p 3000:3000 --env-file .env deep-research-custom
 - 실제 키/토큰은 절대 공개 저장소에 노출하지 마세요.
 
 ### 라이선스
-사내 운영 정책에 따릅니다.
+사내 운영 정책에 따릅니다. 
