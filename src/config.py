@@ -65,20 +65,24 @@ PROCESS_GPT_OFFICE_MCP_URL: str = os.getenv("PROCESS_GPT_OFFICE_MCP_URL", "http:
 # Provider: "openai" | "openrouter" | "custom"
 #   openai     – OpenAI 직접 호출
 #   openrouter – OpenRouter (OpenAI-compatible, base_url 자동 설정)
-#   custom     – 폐쇄망 등 자체 엔드포인트 (LLM_BASE_URL 필수)
-LLM_PROVIDER: str = "openrouter"
+#   custom     – 폐쇄망 등 자체 엔드포인트 (CUSTOM_LLM_BASE_URL 필수)
+LLM_PROVIDER: str = os.getenv("DEEP_RESEARCH_LLM_PROVIDER", "openrouter").strip().lower()
 
 # Provider별 모델명
 OPENAI_MODEL_NAME: str = "gpt-5.1"
 OPENROUTER_MODEL_NAME: str = "openai/gpt-oss-120b"
+LLM_CUSTOM_MODEL_NAME: str = "/models/openai/gpt-oss-120b"
 
 # 이미지 생성 모델
 IMAGE_MODEL_NAME: str = "gemini-3.1-flash-image-preview"
 
-# 폐쇄망/커스텀 설정
-LLM_BASE_URL: str | None = None       # 예: "http://my-llm-server:8080/v1"
-LLM_CUSTOM_MODEL_NAME: str = ""       # custom provider 모델명
-LLM_API_KEY: str = os.getenv("LLM_API_KEY", "").strip()  # custom/폐쇄망 전용 (.env)
+# 폐쇄망/커스텀 설정 (.env — LLM_PROVIDER=custom 일 때만 쓰인다)
+if LLM_PROVIDER == "custom":
+    LLM_BASE_URL: str | None = os.getenv("CUSTOM_LLM_BASE_URL", "").strip() or None
+    LLM_API_KEY: str = os.getenv("CUSTOM_LLM_API_KEY", "").strip()
+else:
+    LLM_BASE_URL = None
+    LLM_API_KEY = ""
 
 # 최종 모델명 결정 (LLM_PROVIDER에 따라 자동 선택)
 _MODEL_MAP = {
@@ -107,3 +111,51 @@ OFFICE_MCP_TIMEOUT_SECONDS: float = 900.0
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ENV: str = os.getenv("ENV", "").strip().lower()
 POLLING_TENANT_ID: str = os.getenv("POLLING_TENANT_ID", "uengine").strip()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 로그 출력
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _mask_secret(value: str) -> str:
+    if not value:
+        return "<empty>"
+    if len(value) <= 8:
+        return "***"
+    return f"{value[:4]}...{value[-4:]} (len={len(value)})"
+
+
+def log_config_summary() -> None:
+    """서버 시작 시 주요 설정값을 로그로 출력한다."""
+    import logging
+    logger = logging.getLogger("research-custom")
+    lines = [
+        "",
+        "============================================================",
+        "                    CONFIG SUMMARY",
+        "============================================================",
+        f"  LLM_PROVIDER              = {LLM_PROVIDER}",
+        f"  MODEL_NAME                = {MODEL_NAME}",
+        f"  IMAGE_MODEL_NAME          = {IMAGE_MODEL_NAME}",
+        f"  LLM_BASE_URL              = {LLM_BASE_URL or '(provider default)'}",
+        f"  LLM_API_KEY (custom)      = {_mask_secret(LLM_API_KEY)}",
+        "  --- Feature flags ---",
+        f"  WEB_SEARCH_ENABLED        = {WEB_SEARCH_ENABLED}",
+        f"  MEMENTO_SEARCH_ENABLED    = {MEMENTO_SEARCH_ENABLED}",
+        "  --- Infra ---",
+        f"  SUPABASE_URL              = {SUPABASE_URL or '<empty>'}",
+        f"  MEMENTO_SERVICE_URL       = {MEMENTO_SERVICE_URL}",
+        f"  PROCESS_GPT_OFFICE_MCP_URL= {PROCESS_GPT_OFFICE_MCP_URL}",
+        f"  MEMENTO_DRIVE_FOLDER_ID   = {MEMENTO_DRIVE_FOLDER_ID or '<empty>'}",
+        f"  OFFICE_MCP_TIMEOUT_SEC    = {OFFICE_MCP_TIMEOUT_SECONDS}",
+        "  --- API Keys ---",
+        f"  OPENAI_API_KEY            = {_mask_secret(OPENAI_API_KEY)}",
+        f"  OPENROUTER_API_KEY        = {_mask_secret(OPENROUTER_API_KEY)}",
+        f"  GOOGLE_API_KEY            = {_mask_secret(GOOGLE_API_KEY)}",
+        f"  TAVILY_API_KEY            = {_mask_secret(TAVILY_API_KEY)}",
+        f"  SUPABASE_KEY              = {_mask_secret(SUPABASE_KEY)}",
+        "  --- Runtime ---",
+        f"  ENV                       = {ENV or '<unset>'}",
+        f"  POLLING_TENANT_ID         = {POLLING_TENANT_ID}",
+        "============================================================",
+    ]
+    logger.info("\n".join(lines))

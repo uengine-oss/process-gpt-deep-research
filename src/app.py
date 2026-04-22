@@ -70,12 +70,8 @@ if not any(isinstance(h, logging.FileHandler) for h in root_logger.handlers):
     root_logger.addHandler(file_handler)
 logger = logging.getLogger("research-custom")
 
-from .config import (
-    LLM_PROVIDER, MODEL_NAME, IMAGE_MODEL_NAME,
-    WEB_SEARCH_ENABLED, MEMENTO_SEARCH_ENABLED,
-)
-logger.info("설정: LLM_PROVIDER=%s, MODEL=%s, IMAGE_MODEL=%s", LLM_PROVIDER, MODEL_NAME, IMAGE_MODEL_NAME)
-logger.info("설정: WEB_SEARCH=%s, MEMENTO_SEARCH=%s", WEB_SEARCH_ENABLED, MEMENTO_SEARCH_ENABLED)
+from .config import log_config_summary
+log_config_summary()
 
 REWRITE_QUEUE_ENABLED = False
 
