@@ -12,7 +12,7 @@
 
 ### 요구 사항
 - Python 3.11+
-- 필요한 API 키/서비스 접근 권한
+- 필요한 API 키/서비스 접근 권한 
   - OpenAI API
   - Tavily API
   - Google GenAI API (이미지 생성)
