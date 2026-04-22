@@ -28,7 +28,7 @@ cp .env.example .env
 ```
 
 필수/주요 변수:
-- `OPENAI_API_KEY`
+- `OPENAI_API_KEY` 
 - `TAVILY_API_KEY`
 - `GOOGLE_API_KEY`
 - `SUPABASE_URL`
