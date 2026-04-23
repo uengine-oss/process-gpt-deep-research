@@ -145,6 +145,8 @@ class DocxTemplateHandler:
                 image_hints=image_hints,
                 output_name=output_name,
                 report_id=str(report_id),
+                proc_inst_id=str(proc_inst_id) if proc_inst_id else "",
+                tenant_id=str(task_record.get("tenant_id") or ""),
             )
             if result and result.get("file_url"):
                 outputs.append({
@@ -239,6 +241,7 @@ class HwpxTemplateHandler:
                 project_title=query,
                 image_prompts=image_prompts,
                 source_chunks_json=chunks_json,
+                tenant_id=str(task_record.get("tenant_id") or ""),
             )
             if result:
                 outputs.append(result)

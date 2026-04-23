@@ -22,6 +22,8 @@ async def call_hwpx_mcp_generate(
     report_description: str,
     reference_text: str = "",
     source_chunks_json: str = "",
+    proc_inst_id: str = "",
+    tenant_id: str = "",
 ) -> Dict[str, Any]:
     url = _get_hwpx_mcp_url()
     payload = {
@@ -30,6 +32,8 @@ async def call_hwpx_mcp_generate(
         "report_description": report_description,
         "reference_text": reference_text,
         "source_chunks_json": source_chunks_json,
+        "proc_inst_id": proc_inst_id,
+        "tenant_id": tenant_id,
     }
     timeout_seconds = _get_hwpx_mcp_timeout_seconds()
     async with Client(url, timeout=timeout_seconds) as client:
@@ -88,6 +92,8 @@ async def call_office_mcp_generate_docx(
     image_hints: Optional[List[Dict[str, Any]]] = None,
     output_name: str = "",
     report_id: str = "",
+    proc_inst_id: str = "",
+    tenant_id: str = "",
 ) -> Dict[str, Any]:
     url = _get_hwpx_mcp_url()
     payload = {
@@ -99,6 +105,8 @@ async def call_office_mcp_generate_docx(
         "image_hints_json": json.dumps(image_hints or [], ensure_ascii=False),
         "output_name": output_name,
         "report_id": report_id,
+        "proc_inst_id": proc_inst_id,
+        "tenant_id": tenant_id,
     }
     timeout_seconds = _get_hwpx_mcp_timeout_seconds()
     async with Client(url, timeout=timeout_seconds) as client:
@@ -116,6 +124,8 @@ async def call_office_mcp_generate_slides(
     slide_count: int = 0,
     style: str = "",
     report_id: str = "",
+    proc_inst_id: str = "",
+    tenant_id: str = "",
 ) -> Dict[str, Any]:
     url = _get_hwpx_mcp_url()
     payload = {
@@ -127,6 +137,8 @@ async def call_office_mcp_generate_slides(
         "slide_count": slide_count,
         "style": style,
         "report_id": report_id,
+        "proc_inst_id": proc_inst_id,
+        "tenant_id": tenant_id,
     }
     timeout_seconds = _get_hwpx_mcp_timeout_seconds()
     async with Client(url, timeout=timeout_seconds) as client:

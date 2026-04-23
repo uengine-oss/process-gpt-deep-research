@@ -93,6 +93,7 @@ async def generate_hwpx_from_template(
     project_title: str,
     image_prompts: Optional[list[dict]] = None,
     source_chunks_json: str = "",
+    tenant_id: str = "",
 ) -> Optional[Dict[str, str]]:
     mcp_result = await call_hwpx_mcp_generate(
         template_url=template_url,
@@ -100,6 +101,8 @@ async def generate_hwpx_from_template(
         report_description=project_context,
         reference_text="",
         source_chunks_json=source_chunks_json,
+        proc_inst_id=proc_inst_id or "",
+        tenant_id=tenant_id or "",
     )
     base64_data = mcp_result.get("base64_data") if isinstance(mcp_result, dict) else None
     file_url = mcp_result.get("file_url") if isinstance(mcp_result, dict) else None
